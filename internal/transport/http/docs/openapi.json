@@ -2,8 +2,8 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Task Service API",
-    "version": "1.0.0",
-    "description": "CRUD API for tasks built with clean architecture."
+    "version": "1.1.0",
+    "description": "Tasks API with optional recurrence schedules. Dates are interpreted in UTC (calendar-day semantics)."
   },
   "servers": [
     {
@@ -21,6 +21,40 @@
       "get": {
         "tags": ["Tasks"],
         "summary": "List tasks",
+        "parameters": [
+          {
+            "name": "include_templates",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "description": "Include recurrence templates (`is_template=true`). By default templates are hidden."
+          },
+          {
+            "name": "occurrence_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2026-04-01"
+            },
+            "description": "UTC date inclusive lower bound for `occurrence_date`. Undated standalone tasks remain visible regardless."
+          },
+          {
+            "name": "occurrence_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date",
+              "example": "2026-04-30"
+            },
+            "description": "UTC date inclusive upper bound for `occurrence_date`."
+          }
+        ],
         "responses": {
           "200": {
             "description": "Task list",
@@ -32,12 +66,13 @@
                 }
               }
             }
-          }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" }
         }
       },
       "post": {
         "tags": ["Tasks"],
-        "summary": "Create task",
+        "summary": "Create task (optionally a recurrence template)",
         "requestBody": {
           "required": true,
           "content": {
@@ -131,6 +166,42 @@
           "404": { "$ref": "#/components/responses/NotFound" }
         }
       }
+    },
+    "/api/v1/tasks/{id}/materialize": {
+      "post": {
+        "tags": ["Tasks"],
+        "summary": "Generate concrete tasks from a recurrence template",
+        "description": "Creates missing occurrence rows between `from` and `to` for a template (`is_template=true`). Idempotent per (`series_id`, `occurrence_date`).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 },
+            "description": "Template task id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MaterializeRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Generation result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MaterializeResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
     }
   },
   "components": {
@@ -153,22 +224,66 @@
       }
     },
     "schemas": {
+      "RecurrenceRule": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["daily_interval", "monthly_day", "specific_dates", "day_parity"]
+          },
+          "every_n_days": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "daily_interval only: repeat every N calendar days starting from anchor_date."
+          },
+          "anchor_date": {
+            "type": "string",
+            "format": "date",
+            "description": "daily_interval only: anchor day (YYYY-MM-DD, UTC)."
+          },
+          "day_of_month": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "description": "monthly_day only: repeat on this calendar day each month when it exists."
+          },
+          "dates": {
+            "type": "array",
+            "items": { "type": "string", "format": "date" },
+            "description": "specific_dates only: concrete dates (YYYY-MM-DD, UTC)."
+          },
+          "parity": {
+            "type": "string",
+            "enum": ["even", "odd"],
+            "description": "day_parity only: repeat on even/odd calendar days of month (by day-of-month number)."
+          }
+        }
+      },
       "CreateTaskRequest": {
         "type": "object",
         "required": ["title"],
         "properties": {
           "title": {
             "type": "string",
-            "example": "Prepare release"
+            "example": "Daily patient calls"
           },
           "description": {
             "type": "string",
-            "example": "Collect release notes and check migrations"
+            "example": "Call discharged patients"
           },
           "status": {
             "type": "string",
             "enum": ["new", "in_progress", "done"],
             "example": "new"
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/RecurrenceRule"
+          },
+          "materialize_horizon_days": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Only when recurrence is present: initially generate occurrences for N UTC days starting today (defaults to 30 server-side)."
           }
         }
       },
@@ -188,6 +303,29 @@
             "type": "string",
             "enum": ["new", "in_progress", "done"],
             "example": "in_progress"
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/RecurrenceRule",
+            "description": "Only applies when updating a recurrence template (`is_template=true`)."
+          }
+        }
+      },
+      "MaterializeRequest": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string", "format": "date", "example": "2026-05-01" },
+          "to": { "type": "string", "format": "date", "example": "2026-05-31" }
+        }
+      },
+      "MaterializeResponse": {
+        "type": "object",
+        "required": ["created"],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "How many new occurrence rows were inserted."
           }
         }
       },
@@ -195,10 +333,10 @@
         "type": "object",
         "properties": {
           "id": { "type": "integer", "format": "int64", "example": 1 },
-          "title": { "type": "string", "example": "Prepare release" },
+          "title": { "type": "string", "example": "Daily patient calls" },
           "description": {
             "type": "string",
-            "example": "Collect release notes and check migrations"
+            "example": "Call discharged patients"
           },
           "status": {
             "type": "string",
@@ -208,12 +346,40 @@
           "created_at": {
             "type": "string",
             "format": "date-time",
-            "example": "2026-03-24T00:00:00Z"
+            "example": "2026-03-24T12:34:56Z"
           },
           "updated_at": {
             "type": "string",
             "format": "date-time",
-            "example": "2026-03-24T00:00:00Z"
+            "example": "2026-03-24T12:34:56Z"
+          },
+          "series_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Stable id for all tasks in the same recurrence series."
+          },
+          "template_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Points to the recurrence template row when this row is a generated occurrence."
+          },
+          "occurrence_date": {
+            "type": "string",
+            "format": "date",
+            "description": "UTC calendar day this occurrence represents (generated rows)."
+          },
+          "is_template": {
+            "type": "boolean",
+            "description": "True when this row stores recurrence settings and titles for the series."
+          },
+          "recurrence_kind": {
+            "type": "string",
+            "enum": ["daily_interval", "monthly_day", "specific_dates", "day_parity"],
+            "description": "Stored on templates for quick filtering/display."
+          },
+          "recurrence": {
+            "$ref": "#/components/schemas/RecurrenceRule",
+            "description": "Stored only on templates."
           }
         }
       },

@@ -22,7 +22,34 @@ docker compose down -v
 docker compose up --build
 ```
 
-Причина в том, что SQL-файл из `migrations/0001_create_tasks.up.sql` монтируется в `docker-entrypoint-initdb.d` и применяется только при инициализации пустого data volume.
+Причина в том, что SQL из `migrations/*.up.sql` монтируется в `docker-entrypoint-initdb.d` и применяется только при инициализации пустого data volume.
+
+## Периодичность задач
+
+Поддерживаются правила из ТЗ:
+
+| Тип (`recurrence.kind`) | Смысл |
+| --- | --- |
+| `daily_interval` | Каждый **n-й день**: `every_n_days` + обязательный `anchor_date` (YYYY-MM-DD, UTC). |
+| `monthly_day` | Раз в месяц в заданное **число** `day_of_month` **1–30** (если в месяце такого дня нет — месяц пропускается). |
+| `specific_dates` | Только перечисленные даты в `dates`. |
+| `day_parity` | Только **чётные** или только **нечётные** числа месяца (`parity`: `even` / `odd`). |
+
+Модель данных:
+
+- Строка-**шаблон** (`is_template=true`) хранит название, описание и JSON правила `recurrence`.
+- Для каждого подходящего календарного дня создаются **экземпляры** (`is_template=false`) с полем `occurrence_date`, связью `template_id` и общим `series_id`.
+- При создании задачи с `recurrence` сервер **сразу генерирует экземпляры** на горизонт **`materialize_horizon_days`** (если не указан — **30** полных UTC-дней от сегодняшней даты).
+- Дополнительно можно догонять экземпляры: **`POST /api/v1/tasks/{id}/materialize`** с телом `{"from":"YYYY-MM-DD","to":"YYYY-MM-DD"}` ( `id` — шаблон). Повторный вызов с теми же датами **идемпотентен** (дубликаты по паре `series_id` + `occurrence_date` не создаются).
+
+Список задач по умолчанию **скрывает шаблоны**. Чтобы увидеть их: `GET /api/v1/tasks?include_templates=true`. Фильтр по календарю: `occurrence_from`, `occurrence_to` (UTC даты); **разовые** задачи без `occurrence_date` по-прежнему попадают в выдачу.
+
+### Принятые решения и краевые случаи
+
+- Все даты трактуются в **UTC** (дата без часового пояса пользователя).
+- Для `monthly_day` число **31** запрещено диапазоном **1–30** по формулировке ТЗ; месяцы без выбранного числа **пропускаются** (например, 30 февраля).
+- Удаление шаблона каскадно удаляет экземпляры (**ON DELETE CASCADE** по `template_id`).
+- Если нужно иное поведение (например, «последний день месяца», часовой пояс клиники, редактирование правила с пересборкой экземпляров) — это предмет отдельного согласования.
 
 ## Swagger
 
@@ -48,8 +75,9 @@ http://localhost:8080/swagger/openapi.json
 
 Основные маршруты:
 
-- `POST /api/v1/tasks`
-- `GET /api/v1/tasks`
+- `POST /api/v1/tasks` — можно передать `recurrence` (+ опционально `materialize_horizon_days`).
+- `GET /api/v1/tasks` — опционально `include_templates`, `occurrence_from`, `occurrence_to`.
 - `GET /api/v1/tasks/{id}`
-- `PUT /api/v1/tasks/{id}`
+- `PUT /api/v1/tasks/{id}` — для шаблона можно обновить `recurrence`.
 - `DELETE /api/v1/tasks/{id}`
+- `POST /api/v1/tasks/{id}/materialize` — догenerate экземпляры по шаблону за интервал `from`/`to`.

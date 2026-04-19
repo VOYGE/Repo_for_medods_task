@@ -1,6 +1,10 @@
 package task
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 type Status string
 
@@ -17,6 +21,13 @@ type Task struct {
 	Status      Status    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+
+	SeriesID       *uuid.UUID       `json:"series_id,omitempty"`
+	TemplateID     *int64           `json:"template_id,omitempty"`
+	OccurrenceDate *time.Time       `json:"occurrence_date,omitempty"` // UTC midnight for calendar day
+	IsTemplate     bool             `json:"is_template"`
+	RecurrenceKind *RecurrenceKind  `json:"recurrence_kind,omitempty"`
+	Recurrence     *RecurrenceRule `json:"recurrence,omitempty"`
 }
 
 func (s Status) Valid() bool {
